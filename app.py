@@ -6,12 +6,23 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 import tkinter as tk
 import tkinter.font as tkfont
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
+
+
+@dataclass(frozen=True)
+class ZipPaneEntry:
+    rel_path: str
+    name: str
+    is_dir: bool
+    size: int = 0
+    modified_ts: float | None = None
 
 
 @dataclass
@@ -23,10 +34,12 @@ class PaneState:
     tree: ttk.Treeview
     back_stack: list[Path] = field(default_factory=list)
     forward_stack: list[Path] = field(default_factory=list)
-    entries: list[Path | None] = field(default_factory=list)  # None = ".."
+    entries: list[Path | ZipPaneEntry | None] = field(default_factory=list)  # None = ".."
     marks: set[Path] = field(default_factory=set)
     sort_column: str = "name"
     sort_desc: bool = False
+    zip_path: Path | None = None
+    zip_rel_dir: str = ""
 
 
 class TwoPaneCommander:
@@ -43,23 +56,25 @@ class TwoPaneCommander:
         self.copy_move_name_entry: ttk.Entry | None = None
         self.copy_move_select_mode = "name"
         self.favorites_file = Path.home() / ".tc-mac-lite-favorites.json"
+        self.state_file = Path.home() / ".tc-mac-lite-state.json"
         self.favorites: list[str] = []
 
-        base_path = Path.cwd()
+        left_start, right_start = self._load_last_pane_paths()
         self.active_pane: PaneState | None = None
         self.left: PaneState
         self.right: PaneState
         self.panes: ttk.Panedwindow
 
-        self._build_ui(base_path)
+        self._build_ui(left_start, right_start)
         self._load_favorites()
         self._bind_keys()
         self._refresh_pane(self.left, keep_selection=False)
         self._refresh_pane(self.right, keep_selection=False)
         self._set_active(self.left)
         self.left.tree.focus_set()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    def _build_ui(self, base_path: Path) -> None:
+    def _build_ui(self, left_start: Path, right_start: Path) -> None:
         top = ttk.Frame(self.root, padding=6)
         top.pack(fill=tk.BOTH, expand=True)
 
@@ -72,8 +87,8 @@ class TwoPaneCommander:
         self.panes.add(right_frame, weight=1)
         self.panes.bind("<Double-Button-1>", self._recenter_splitter_if_clicked)
 
-        self.left = self._build_pane("Left", left_frame, base_path)
-        self.right = self._build_pane("Right", right_frame, base_path)
+        self.left = self._build_pane("Left", left_frame, left_start)
+        self.right = self._build_pane("Right", right_frame, right_start)
         self._build_terminal(self.root)
 
         self.status_bar = ttk.Frame(self.root, padding=(8, 4))
@@ -123,6 +138,12 @@ class TwoPaneCommander:
         tree.bind("<BackSpace>", lambda _e, p=pane: self._handle_backspace(p))
         tree.bind("<KeyPress>", lambda e, p=pane: self._handle_keypress(e, p))
         tree.bind("<Right>", self._handle_right_key)
+        if name == "Left":
+            tree.bind("<Control-Right>", lambda _e, p=pane: self._open_selected_dir_in_other_pane(p))
+            tree.bind("<Command-Right>", lambda _e, p=pane: self._open_selected_dir_in_other_pane(p))
+        else:
+            tree.bind("<Control-Left>", lambda _e, p=pane: self._open_selected_dir_in_other_pane(p))
+            tree.bind("<Command-Left>", lambda _e, p=pane: self._open_selected_dir_in_other_pane(p))
         tree.bind("<Escape>", lambda _e: self._clear_filter())
         tree.bind("<Control-r>", self._handle_refresh_shortcut)
         tree.bind("<Control-R>", self._handle_refresh_shortcut)
@@ -164,6 +185,10 @@ class TwoPaneCommander:
         self.root.bind_all("<Control-KeyPress-R>", self._handle_refresh_shortcut, add="+")
         self.root.bind_all("<Command-KeyPress-r>", self._handle_refresh_shortcut, add="+")
         self.root.bind_all("<Command-KeyPress-R>", self._handle_refresh_shortcut, add="+")
+        self.root.bind_all("<Control-KeyPress-Left>", self._handle_cross_pane_open, add="+")
+        self.root.bind_all("<Control-KeyPress-Right>", self._handle_cross_pane_open, add="+")
+        self.root.bind_all("<Command-KeyPress-Left>", self._handle_cross_pane_open, add="+")
+        self.root.bind_all("<Command-KeyPress-Right>", self._handle_cross_pane_open, add="+")
         self.root.bind("<Control-d>", self._handle_favorites_shortcut)
         self.root.bind("<Control-D>", self._handle_favorites_shortcut)
         self.root.bind_all("<Control-KeyPress-d>", self._handle_favorites_shortcut, add="+")
@@ -172,11 +197,19 @@ class TwoPaneCommander:
     def _handle_refresh_shortcut(self, _event: tk.Event | None = None) -> str:
         pane = self.active_pane if self.active_pane else self.left
         self._refresh_pane(pane, keep_selection=True)
-        self.status_var.set(f"Refreshed: {pane.current_path}")
+        self.status_var.set(f"Refreshed: {self._zip_display_path(pane)}")
         return "break"
 
     def _handle_favorites_shortcut(self, _event: tk.Event | None = None) -> str:
         return self._show_favorites_hotlist()
+
+    def _handle_cross_pane_open(self, event: tk.Event) -> str | None:
+        source_widget = event.widget if event.widget is not None else self.root.focus_get()
+        if source_widget is self.left.tree and event.keysym == "Right":
+            return self._open_selected_dir_in_other_pane(self.left)
+        if source_widget is self.right.tree and event.keysym == "Left":
+            return self._open_selected_dir_in_other_pane(self.right)
+        return None
 
     def _pane_by_name(self, name: str) -> PaneState:
         return self.left if name == "Left" else self.right
@@ -200,17 +233,38 @@ class TwoPaneCommander:
 
     def _go_to_path(self, pane_name: str) -> None:
         pane = self._pane_by_name(pane_name)
-        target = Path(pane.path_var.get()).expanduser()
+        raw_target = pane.path_var.get().strip()
+        if self._is_zip_mode(pane) and raw_target == self._zip_display_path(pane):
+            return
+        target = Path(raw_target).expanduser()
         if not target.exists() or not target.is_dir():
             messagebox.showerror("Invalid path", f"Not a directory: {target}")
             return
+        pane.zip_path = None
+        pane.zip_rel_dir = ""
         self._push_history(pane, target)
         pane.current_path = target.resolve()
         pane.path_var.set(str(pane.current_path))
         self._refresh_pane(pane, keep_selection=False)
+        self._save_last_pane_paths()
 
     def _go_parent(self, pane_name: str) -> None:
         pane = self._pane_by_name(pane_name)
+        if self._is_zip_mode(pane):
+            if pane.zip_rel_dir:
+                pane.zip_rel_dir = pane.zip_rel_dir.rsplit("/", 1)[0] if "/" in pane.zip_rel_dir else ""
+                self._refresh_pane(pane, keep_selection=False)
+                return
+            archive = pane.zip_path
+            pane.zip_path = None
+            pane.zip_rel_dir = ""
+            self._refresh_pane(pane, keep_selection=False)
+            if archive:
+                for idx, entry in enumerate(pane.entries):
+                    if entry == archive:
+                        self._select_index(pane, idx)
+                        break
+            return
         parent = pane.current_path.parent
         if parent == pane.current_path:
             return
@@ -218,6 +272,41 @@ class TwoPaneCommander:
         pane.current_path = parent
         pane.path_var.set(str(parent))
         self._refresh_pane(pane, keep_selection=False)
+        self._save_last_pane_paths()
+
+    def _load_last_pane_paths(self) -> tuple[Path, Path]:
+        default_path = Path.cwd().resolve()
+        if not self.state_file.exists():
+            return default_path, default_path
+        try:
+            raw = json.loads(self.state_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return default_path, default_path
+        if not isinstance(raw, dict):
+            return default_path, default_path
+
+        def resolve_dir(value: object) -> Path:
+            if not isinstance(value, str):
+                return default_path
+            candidate = Path(value).expanduser()
+            if candidate.exists() and candidate.is_dir():
+                return candidate.resolve()
+            return default_path
+
+        return resolve_dir(raw.get("left")), resolve_dir(raw.get("right"))
+
+    def _save_last_pane_paths(self) -> None:
+        if not hasattr(self, "left") or not hasattr(self, "right"):
+            return
+        data = {"left": str(self.left.current_path), "right": str(self.right.current_path)}
+        try:
+            self.state_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except OSError as exc:
+            self.status_var.set(f"Failed saving pane state: {exc}")
+
+    def _on_close(self) -> None:
+        self._save_last_pane_paths()
+        self.root.destroy()
 
     def _load_favorites(self) -> None:
         if not self.favorites_file.exists():
@@ -304,11 +393,14 @@ class TwoPaneCommander:
                 messagebox.showerror("Favorites", f"Path not found:\n{target}")
                 return
             self._push_history(pane, target)
+            pane.zip_path = None
+            pane.zip_rel_dir = ""
             pane.current_path = target.resolve()
             pane.path_var.set(str(pane.current_path))
             self._refresh_pane(pane, keep_selection=False)
             self._set_active(pane)
             pane.tree.focus_set()
+            self._save_last_pane_paths()
             window.destroy()
 
         def add_current() -> None:
@@ -342,6 +434,10 @@ class TwoPaneCommander:
                 listbox.activate(new_idx)
                 listbox.see(new_idx)
 
+        def close_hotlist(_event: tk.Event | None = None) -> str:
+            window.destroy()
+            return "break"
+
         ttk.Button(buttons, text="Add current", command=add_current).pack(side=tk.LEFT, padx=4)
         ttk.Button(buttons, text="Go", command=go_selected).pack(side=tk.RIGHT, padx=4)
         ttk.Button(buttons, text="Remove", command=remove_selected).pack(side=tk.RIGHT, padx=4)
@@ -351,6 +447,8 @@ class TwoPaneCommander:
         listbox.bind("<Down>", lambda _e: move_down())
         listbox.bind("<Double-Button-1>", lambda _e: go_selected())
         listbox.bind("<Return>", lambda _e: go_selected())
+        listbox.bind("<Escape>", close_hotlist)
+        window.bind("<Escape>", close_hotlist)
         return "break"
 
     def _format_size(self, path: Path) -> str:
@@ -360,6 +458,9 @@ class TwoPaneCommander:
             size = path.stat().st_size
         except OSError:
             return "?"
+        return self._format_size_bytes(size)
+
+    def _format_size_bytes(self, size: int) -> str:
         units = ["B", "KB", "MB", "GB", "TB"]
         value = float(size)
         unit = units[0]
@@ -378,6 +479,19 @@ class TwoPaneCommander:
         except OSError:
             return "?"
         return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+    def _is_zip_file(self, path: Path) -> bool:
+        return path.is_file() and path.suffix.lower() == ".zip"
+
+    def _is_zip_mode(self, pane: PaneState) -> bool:
+        return pane.zip_path is not None
+
+    def _zip_display_path(self, pane: PaneState) -> str:
+        if not pane.zip_path:
+            return str(pane.current_path)
+        rel = pane.zip_rel_dir.strip("/")
+        inside = f"/{rel}" if rel else "/"
+        return f"{pane.zip_path}::{inside}"
 
     def _sort_key(self, path: Path, column: str) -> tuple:
         if column == "size":
@@ -402,6 +516,20 @@ class TwoPaneCommander:
         dirs_sorted = sorted(dirs, key=lambda p: self._sort_key(p, pane.sort_column), reverse=pane.sort_desc)
         files_sorted = sorted(files, key=lambda p: self._sort_key(p, pane.sort_column), reverse=pane.sort_desc)
         return dirs_sorted + files_sorted
+
+    def _sort_zip_entries(self, pane: PaneState, entries: list[ZipPaneEntry]) -> list[ZipPaneEntry]:
+        def key(entry: ZipPaneEntry) -> tuple:
+            if pane.sort_column == "size":
+                return (entry.size if not entry.is_dir else -1, entry.name.lower())
+            if pane.sort_column == "ext":
+                return (Path(entry.name).suffix.lower(), entry.name.lower())
+            if pane.sort_column == "modified":
+                return (entry.modified_ts or 0.0, entry.name.lower())
+            return (entry.name.lower(),)
+
+        dirs = [entry for entry in entries if entry.is_dir]
+        files = [entry for entry in entries if not entry.is_dir]
+        return sorted(dirs, key=key, reverse=pane.sort_desc) + sorted(files, key=key, reverse=pane.sort_desc)
 
     def _update_sort_headings(self, pane: PaneState) -> None:
         labels = {"name": "Name", "size": "Size", "ext": "Ext", "modified": "Last Modified"}
@@ -499,6 +627,9 @@ class TwoPaneCommander:
         return "break"
 
     def _refresh_pane(self, pane: PaneState, keep_selection: bool = True) -> None:
+        if self._is_zip_mode(pane):
+            self._refresh_zip_pane(pane, keep_selection=keep_selection)
+            return
         previous_path = self._selected_path(pane) if keep_selection else None
         pane.tree.delete(*pane.tree.get_children())
         pane.entries = [None]
@@ -537,6 +668,81 @@ class TwoPaneCommander:
                         break
             self._select_index(pane, selection)
 
+    def _refresh_zip_pane(self, pane: PaneState, keep_selection: bool = True) -> None:
+        if not pane.zip_path:
+            return
+        previous_entry = self._selected_zip_entry(pane) if keep_selection else None
+        pane.tree.delete(*pane.tree.get_children())
+        pane.entries = [None]
+        pane.tree.insert("", tk.END, iid="0", values=("..", "", "", ""))
+        prefix = f"{pane.zip_rel_dir.strip('/')}/" if pane.zip_rel_dir.strip("/") else ""
+        dir_entries: dict[str, ZipPaneEntry] = {}
+        file_entries: list[ZipPaneEntry] = []
+        try:
+            with zipfile.ZipFile(pane.zip_path) as zf:
+                for info in zf.infolist():
+                    filename = info.filename.strip("/")
+                    if not filename:
+                        continue
+                    if prefix and not filename.startswith(prefix):
+                        continue
+                    remainder = filename[len(prefix):] if prefix else filename
+                    if not remainder:
+                        continue
+                    head, _, tail = remainder.partition("/")
+                    rel_path = f"{prefix}{head}".strip("/")
+                    if tail:
+                        if rel_path not in dir_entries:
+                            dir_entries[rel_path] = ZipPaneEntry(rel_path=rel_path, name=head, is_dir=True)
+                        continue
+                    modified_ts = None
+                    try:
+                        modified_ts = datetime(*info.date_time).timestamp()
+                    except ValueError:
+                        modified_ts = None
+                    file_entries.append(
+                        ZipPaneEntry(
+                            rel_path=rel_path,
+                            name=head,
+                            is_dir=info.is_dir(),
+                            size=0 if info.is_dir() else info.file_size,
+                            modified_ts=modified_ts,
+                        )
+                    )
+        except (FileNotFoundError, zipfile.BadZipFile, OSError) as exc:
+            messagebox.showerror("ZIP", f"Cannot open archive:\n{exc}")
+            pane.zip_path = None
+            pane.zip_rel_dir = ""
+            self._refresh_pane(pane, keep_selection=True)
+            return
+
+        entries = list(dir_entries.values()) + file_entries
+        if pane is self.active_pane and self.filter_query:
+            entries = [entry for entry in entries if self._matches_filter(entry.name, self.filter_query)]
+        entries = self._sort_zip_entries(pane, entries)
+        for idx, entry in enumerate(entries, start=1):
+            pane.entries.append(entry)
+            ext = "" if entry.is_dir else Path(entry.name).suffix.lstrip(".")
+            size = "<DIR>" if entry.is_dir else self._format_size_bytes(entry.size)
+            modified = "?" if entry.modified_ts is None else datetime.fromtimestamp(entry.modified_ts).strftime("%Y-%m-%d %H:%M")
+            pane.tree.insert(
+                "",
+                tk.END,
+                iid=str(idx),
+                values=(f"{entry.name}/" if entry.is_dir else entry.name, size, ext, modified),
+            )
+
+        pane.path_var.set(self._zip_display_path(pane))
+        selection = 0
+        if pane is self.active_pane and self.filter_query and len(pane.entries) > 1:
+            selection = 1
+        if previous_entry:
+            for idx, entry in enumerate(pane.entries):
+                if entry == previous_entry:
+                    selection = idx
+                    break
+        self._select_index(pane, selection)
+
     def _matches_filter(self, name: str, query: str) -> bool:
         if "*" in query:
             pattern = "^" + "".join(".*" if ch == "*" else re.escape(ch) for ch in query) + ".*"
@@ -573,11 +779,22 @@ class TwoPaneCommander:
             return None
 
     def _selected_path(self, pane: PaneState) -> Path | None:
+        if self._is_zip_mode(pane):
+            return None
         idx = self._selected_index(pane)
         if idx is None or idx >= len(pane.entries):
             return None
         entry = pane.entries[idx]
         return pane.current_path.parent if entry is None else entry
+
+    def _selected_zip_entry(self, pane: PaneState) -> ZipPaneEntry | None:
+        if not self._is_zip_mode(pane):
+            return None
+        idx = self._selected_index(pane)
+        if idx is None or idx >= len(pane.entries):
+            return None
+        entry = pane.entries[idx]
+        return entry if isinstance(entry, ZipPaneEntry) else None
 
     def _select_index(self, pane: PaneState, idx: int) -> None:
         if idx < 0 or idx >= len(pane.entries):
@@ -587,6 +804,21 @@ class TwoPaneCommander:
         pane.tree.see(str(idx))
 
     def _open_selected(self, pane: PaneState) -> None:
+        if self._is_zip_mode(pane):
+            entry = self._selected_zip_entry(pane)
+            should_clear_filter = pane is self.active_pane and (self.filter_mode or bool(self.filter_query))
+            if entry is None:
+                self._go_parent(pane.name)
+            elif entry.is_dir:
+                pane.zip_rel_dir = entry.rel_path
+                self._refresh_pane(pane, keep_selection=False)
+            else:
+                self.status_var.set("Use F5 to extract files from ZIP to the other pane.")
+            if should_clear_filter:
+                self.filter_mode = False
+                self.filter_query = ""
+                self._apply_filter()
+            return
         target = self._selected_path(pane)
         if not target:
             return
@@ -596,6 +828,13 @@ class TwoPaneCommander:
             pane.current_path = target
             pane.path_var.set(str(target))
             self._refresh_pane(pane, keep_selection=False)
+            self._save_last_pane_paths()
+        elif self._is_zip_file(target):
+            pane.zip_path = target.resolve()
+            pane.zip_rel_dir = ""
+            pane.path_var.set(self._zip_display_path(pane))
+            self._refresh_pane(pane, keep_selection=False)
+            self.status_var.set(f"Opened ZIP: {pane.zip_path}")
         else:
             self._open_external(target)
         if should_clear_filter:
@@ -603,7 +842,29 @@ class TwoPaneCommander:
             self.filter_query = ""
             self._apply_filter()
 
+    def _open_selected_dir_in_other_pane(self, source_pane: PaneState) -> str:
+        target = self._selected_path(source_pane)
+        if not target or not target.is_dir():
+            self.status_var.set("Select a directory to open in the other pane.")
+            return "break"
+        other = self._other_pane(source_pane)
+        resolved_target = target.resolve()
+        self._push_history(other, resolved_target)
+        other.zip_path = None
+        other.zip_rel_dir = ""
+        other.current_path = resolved_target
+        other.path_var.set(str(resolved_target))
+        self._refresh_pane(other, keep_selection=False)
+        self._set_active(other)
+        other.tree.focus_set()
+        self._save_last_pane_paths()
+        self.status_var.set(f"Opened in {other.name}: {resolved_target}")
+        return "break"
+
     def _toggle_mark_current(self, pane: PaneState) -> str:
+        if self._is_zip_mode(pane):
+            self.status_var.set("Marking inside ZIP is not supported.")
+            return "break"
         idx = self._selected_index(pane)
         if idx is None:
             return "break"
@@ -629,9 +890,14 @@ class TwoPaneCommander:
     def _handle_keypress(self, event: tk.Event, pane: PaneState) -> str | None:
         if pane is not self.active_pane:
             return None
+        modifier_pressed = bool(event.state & 0x4 or event.state & 0x8)
+        if modifier_pressed and event.keysym in {"Right", "KP_Right"} and pane is self.left:
+            return self._open_selected_dir_in_other_pane(pane)
+        if modifier_pressed and event.keysym in {"Left", "KP_Left"} and pane is self.right:
+            return self._open_selected_dir_in_other_pane(pane)
         if event.keysym in {"Up", "Down", "Left", "Right", "Return", "Tab", "Escape", "BackSpace", "space"}:
             return None
-        if event.state & 0x4 or event.state & 0x8:
+        if modifier_pressed:
             return None
         if not event.char or not event.char.isprintable():
             return None
@@ -641,10 +907,20 @@ class TwoPaneCommander:
         return "break"
 
     def _effective_selection(self, pane: PaneState) -> list[Path]:
+        if self._is_zip_mode(pane):
+            return []
         if pane.marks:
             return sorted(pane.marks, key=lambda p: p.name.lower())
         one = self._selected_path(pane)
         if one is None or one == pane.current_path.parent:
+            return []
+        return [one]
+
+    def _effective_zip_selection(self, pane: PaneState) -> list[ZipPaneEntry]:
+        if not self._is_zip_mode(pane):
+            return []
+        one = self._selected_zip_entry(pane)
+        if one is None:
             return []
         return [one]
 
@@ -669,7 +945,7 @@ class TwoPaneCommander:
     def _show_copy_move_dialog(
         self,
         move: bool,
-        items: list[Path],
+        items: list[Path | ZipPaneEntry],
         default_target_dir: Path,
     ) -> tuple[Path, str | None] | None:
         action = "Move" if move else "Copy"
@@ -760,11 +1036,18 @@ class TwoPaneCommander:
         pane = self.active_pane
         if not pane:
             return
+        if self._is_zip_mode(pane):
+            self._copy_from_zip(move=move, pane=pane)
+            return
         items = self._effective_selection(pane)
         if not items:
             messagebox.showinfo("No selection", "Select or mark files/directories first.")
             return
-        target_dir = self._other_pane(pane).current_path
+        other = self._other_pane(pane)
+        if self._is_zip_mode(other):
+            messagebox.showinfo("Copy/Move", "Target pane must be a filesystem directory, not a ZIP view.")
+            return
+        target_dir = other.current_path
         action = "Move" if move else "Copy"
         dialog_result = self._show_copy_move_dialog(move=move, items=items, default_target_dir=target_dir)
         if not dialog_result:
@@ -801,12 +1084,85 @@ class TwoPaneCommander:
                 break
         pane.marks.difference_update(items)
         self._refresh_pane(pane)
-        self._refresh_pane(self._other_pane(pane), keep_selection=False)
+        self._refresh_pane(other, keep_selection=False)
         self.status_var.set(f"{action} completed for {copied} item(s).")
+
+    def _copy_from_zip(self, move: bool, pane: PaneState) -> None:
+        if move:
+            messagebox.showinfo("Move", "Moving from inside ZIP is not supported. Use F5 to extract.")
+            return
+        if not pane.zip_path:
+            return
+        items = self._effective_zip_selection(pane)
+        if not items:
+            messagebox.showinfo("No selection", "Select a file or directory inside the ZIP first.")
+            return
+        other = self._other_pane(pane)
+        if self._is_zip_mode(other):
+            messagebox.showinfo("Copy", "Target pane must be a filesystem directory, not another ZIP.")
+            return
+        target_dir = other.current_path
+        dialog_result = self._show_copy_move_dialog(move=False, items=items, default_target_dir=target_dir)
+        if not dialog_result:
+            return
+        target_dir, new_name = dialog_result
+        copied = 0
+        try:
+            with zipfile.ZipFile(pane.zip_path) as zf, tempfile.TemporaryDirectory() as tmp_dir:
+                tmp_root = Path(tmp_dir)
+                for idx, entry in enumerate(items):
+                    destination_name = new_name if (new_name and len(items) == 1 and idx == 0) else entry.name
+                    dest = target_dir / destination_name
+                    if dest.exists():
+                        overwrite = messagebox.askyesno("Overwrite?", f"{dest} exists. Replace it?")
+                        if not overwrite:
+                            continue
+                        if dest.is_dir():
+                            shutil.rmtree(dest)
+                        else:
+                            dest.unlink()
+                    try:
+                        self._extract_zip_entry(zf, entry, tmp_root, dest)
+                    except KeyError as exc:
+                        messagebox.showerror("Copy", f"ZIP entry not found:\n{exc}")
+                        break
+                    except PermissionError as exc:
+                        messagebox.showerror("Copy", f"Permission denied:\n{exc}")
+                        break
+                    except OSError as exc:
+                        messagebox.showerror("Copy", f"Extraction failed:\n{exc}")
+                        break
+                    copied += 1
+        except (FileNotFoundError, zipfile.BadZipFile, OSError) as exc:
+            messagebox.showerror("Copy", f"Cannot open ZIP:\n{exc}")
+            return
+        self._refresh_pane(pane, keep_selection=True)
+        self._refresh_pane(other, keep_selection=False)
+        self.status_var.set(f"Copied {copied} item(s) from ZIP.")
+
+    def _extract_zip_entry(self, zf: zipfile.ZipFile, entry: ZipPaneEntry, tmp_root: Path, dest: Path) -> None:
+        if entry.is_dir:
+            prefix = entry.rel_path.strip("/") + "/"
+            members = [info for info in zf.infolist() if info.filename.startswith(prefix)]
+            if not members:
+                dest.mkdir(parents=True, exist_ok=True)
+                return
+            zf.extractall(path=tmp_root, members=[info.filename for info in members])
+            src = tmp_root / entry.rel_path
+            if src.is_dir():
+                shutil.copytree(src, dest)
+            else:
+                dest.mkdir(parents=True, exist_ok=True)
+            return
+        extracted = zf.extract(entry.rel_path, path=tmp_root)
+        shutil.copy2(Path(extracted), dest)
 
     def _delete_selected(self) -> None:
         pane = self.active_pane
         if not pane:
+            return
+        if self._is_zip_mode(pane):
+            messagebox.showinfo("Delete", "Delete is not supported while browsing inside a ZIP.")
             return
         items = self._effective_selection(pane)
         if not items:
@@ -839,6 +1195,9 @@ class TwoPaneCommander:
         pane = self.active_pane
         if not pane:
             return
+        if self._is_zip_mode(pane):
+            messagebox.showinfo("Create directory", "Create directory is not supported inside a ZIP.")
+            return
         name = simpledialog.askstring("Create directory", "Directory name:")
         if not name:
             return
@@ -858,6 +1217,9 @@ class TwoPaneCommander:
         pane = self.active_pane
         if not pane:
             return
+        if self._is_zip_mode(pane):
+            messagebox.showinfo("No file", "View/Edit inside ZIP is not supported yet. Use F5 to extract first.")
+            return
         target = self._selected_path(pane)
         if target is None or target.is_dir():
             messagebox.showinfo("No file", "Select a file to view/edit.")
@@ -867,6 +1229,9 @@ class TwoPaneCommander:
     def _create_new_file(self) -> str:
         pane = self.active_pane
         if not pane:
+            return "break"
+        if self._is_zip_mode(pane):
+            messagebox.showinfo("Create file", "Creating files inside ZIP is not supported.")
             return "break"
         name = simpledialog.askstring("Create file (Shift+F4)", "New file name:")
         if not name:
@@ -996,6 +1361,9 @@ class TwoPaneCommander:
         pane = self.active_pane
         if not pane:
             return "break"
+        if self._is_zip_mode(pane):
+            messagebox.showinfo("Rename", "Renaming inside ZIP is not supported.")
+            return "break"
         target = self._selected_path(pane)
         if target is None or target == pane.current_path.parent:
             messagebox.showinfo("Rename", "Select a file or directory to rename.")
@@ -1032,7 +1400,7 @@ class TwoPaneCommander:
             self.terminal_visible = True
         self.terminal_input.focus_set()
         if self.active_pane:
-            self.status_var.set(f"Terminal cwd: {self.active_pane.current_path}")
+            self.status_var.set(f"Terminal cwd: {self._zip_display_path(self.active_pane)}")
 
     def _hide_terminal(self) -> str:
         if self.terminal_visible:
@@ -1060,6 +1428,10 @@ class TwoPaneCommander:
         if not command:
             return "break"
         pane = self.active_pane if self.active_pane else self.left
+        if self._is_zip_mode(pane):
+            self._append_terminal_output("Error: terminal commands are disabled while browsing inside ZIP.\n")
+            self.status_var.set("Exit ZIP view to use terminal commands.")
+            return "break"
         self._append_terminal_output(f"$ {command}\n")
         try:
             completed = subprocess.run(

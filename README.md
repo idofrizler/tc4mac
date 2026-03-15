@@ -31,6 +31,8 @@ python3 app.py
 - `Shift+F4` - create new file in current folder and open editor
 - `F5` - copy selected/marked items to the other pane
 - `F6` - move selected/marked items to the other pane
+- `Enter` on a `.zip` file opens it as a virtual directory in-place
+- While inside a ZIP, `F5` extracts the selected file/folder to the other pane
 - F5/F6 now open a small operation dialog; for single-file copy/move, pressing F5/F6 again toggles name selection between **name-only** and **full filename** for quick rename
 - `Shift+F6` - rename selected file/directory (TC-style rename shortcut)
 - `F7` - create directory in active pane
@@ -38,6 +40,7 @@ python3 app.py
 - `Esc` - exit search mode (or close terminal when terminal input is focused)
 - `Ctrl+D` - open favorites hotlist window
 - `Ctrl+R` (or `Cmd+R` on macOS) - refresh active pane folder contents
+- `Ctrl+Left` in right pane (or `Ctrl+Right` in left pane) - open selected directory in the other pane
 - In the edit window, `Ctrl+S` saves the current file
 - In view/edit windows, `Esc` closes the window; in edit mode with unsaved changes, it asks to save/discard/cancel
 
@@ -68,5 +71,8 @@ Install/use:
 - If nothing is marked, operations use the currently selected item.
 - Typed search is shown in a small box at the bottom right (`Search: ...`).
 - In the terminal panel, `Enter` runs the command in the active pane directory and `Esc` closes the panel.
-- In favorites hotlist, use `Up/Down` and `Enter` to choose a folder; use **Add current** to save the active path.
+- In favorites hotlist, use `Up/Down` and `Enter` to choose a folder; use **Add current** to save the active path; `Esc` closes the hotlist.
+- In ZIP view, `Backspace` goes up inside the archive; at archive root, it exits back to the parent folder.
+- ZIP view is read-only: extract with `F5` first, then edit/move/delete on normal filesystem pane.
+- On startup, the app restores the last opened folder in each pane.
 - This is a practical starter implementation inspired by Total Commander behavior.
