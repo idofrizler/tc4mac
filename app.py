@@ -124,7 +124,11 @@ class TwoPaneCommander:
         tree.bind("<KeyPress>", lambda e, p=pane: self._handle_keypress(e, p))
         tree.bind("<Right>", self._handle_right_key)
         tree.bind("<Escape>", lambda _e: self._clear_filter())
+        tree.bind("<Control-r>", self._handle_refresh_shortcut)
+        tree.bind("<Control-R>", self._handle_refresh_shortcut)
         path_entry.bind("<Return>", lambda _e, n=name: self._go_to_path(n))
+        path_entry.bind("<Control-r>", self._handle_refresh_shortcut)
+        path_entry.bind("<Control-R>", self._handle_refresh_shortcut)
 
         return pane
 
@@ -152,8 +156,27 @@ class TwoPaneCommander:
         self.root.bind("<F7>", lambda _e: self._make_dir())
         self.root.bind("<F8>", lambda _e: self._delete_selected())
         self.root.bind("<Control-s>", lambda _e: self._clear_filter())
-        self.root.bind("<Control-d>", lambda _e: self._show_favorites_hotlist())
-        self.root.bind("<Control-D>", lambda _e: self._show_favorites_hotlist())
+        self.root.bind("<Control-r>", self._handle_refresh_shortcut)
+        self.root.bind("<Control-R>", self._handle_refresh_shortcut)
+        self.root.bind("<Command-r>", self._handle_refresh_shortcut)
+        self.root.bind("<Command-R>", self._handle_refresh_shortcut)
+        self.root.bind_all("<Control-KeyPress-r>", self._handle_refresh_shortcut, add="+")
+        self.root.bind_all("<Control-KeyPress-R>", self._handle_refresh_shortcut, add="+")
+        self.root.bind_all("<Command-KeyPress-r>", self._handle_refresh_shortcut, add="+")
+        self.root.bind_all("<Command-KeyPress-R>", self._handle_refresh_shortcut, add="+")
+        self.root.bind("<Control-d>", self._handle_favorites_shortcut)
+        self.root.bind("<Control-D>", self._handle_favorites_shortcut)
+        self.root.bind_all("<Control-KeyPress-d>", self._handle_favorites_shortcut, add="+")
+        self.root.bind_all("<Control-KeyPress-D>", self._handle_favorites_shortcut, add="+")
+
+    def _handle_refresh_shortcut(self, _event: tk.Event | None = None) -> str:
+        pane = self.active_pane if self.active_pane else self.left
+        self._refresh_pane(pane, keep_selection=True)
+        self.status_var.set(f"Refreshed: {pane.current_path}")
+        return "break"
+
+    def _handle_favorites_shortcut(self, _event: tk.Event | None = None) -> str:
+        return self._show_favorites_hotlist()
 
     def _pane_by_name(self, name: str) -> PaneState:
         return self.left if name == "Left" else self.right
@@ -442,7 +465,13 @@ class TwoPaneCommander:
             self.status_var.set(f"Not enough room to auto-size {column}.")
             return
 
-        font = tkfont.nametofont(str(pane.tree.cget("font")))
+        style = ttk.Style(pane.tree)
+        style_name = str(pane.tree.cget("style") or "Treeview")
+        font_spec = style.lookup(style_name, "font") or style.lookup("Treeview", "font") or "TkDefaultFont"
+        try:
+            font = tkfont.nametofont(str(font_spec))
+        except tk.TclError:
+            font = tkfont.Font(font=font_spec)
         heading_text = str(pane.tree.heading(column, "text")).replace(" ▲", "").replace(" ▼", "")
         longest = font.measure(heading_text)
         col_index = cols.index(column)
@@ -872,29 +901,68 @@ class TwoPaneCommander:
         text.pack(fill=tk.BOTH, expand=True)
         with path.open("r", encoding="utf-8", errors="replace") as f:
             text.insert("1.0", f.read())
+        text.focus_set()
 
         if not editable:
+            def close_view(_event: tk.Event | None = None) -> str:
+                window.destroy()
+                return "break"
+
+            window.protocol("WM_DELETE_WINDOW", window.destroy)
+            text.bind("<Escape>", close_view)
             text.configure(state=tk.DISABLED)
             return
 
         buttons = ttk.Frame(window, padding=6)
         buttons.pack(fill=tk.X)
+        last_saved_content = text.get("1.0", "end-1c")
 
-        def save() -> None:
-            data = text.get("1.0", tk.END)
+        def save() -> bool:
+            nonlocal last_saved_content
+            data = text.get("1.0", "end-1c")
             try:
                 with path.open("w", encoding="utf-8") as f:
-                    f.write(data.rstrip("\n"))
+                    f.write(data)
                     f.write("\n")
             except PermissionError as exc:
                 messagebox.showerror("Save", f"Permission denied:\n{exc}")
-                return
+                return False
             except OSError as exc:
                 messagebox.showerror("Save", f"Write failed:\n{exc}")
-                return
+                return False
+            last_saved_content = data
             self.status_var.set(f"Saved: {path}")
+            return True
+
+        def save_shortcut(_event: tk.Event | None = None) -> str:
+            save()
+            return "break"
+
+        def close_editor(_event: tk.Event | None = None) -> str:
+            current = text.get("1.0", "end-1c")
+            if current == last_saved_content:
+                window.destroy()
+                return "break"
+            choice = messagebox.askyesnocancel(
+                "Unsaved changes",
+                f"Save changes to {path.name} before closing?",
+                parent=window,
+            )
+            if choice is None:
+                return "break"
+            if choice and not save():
+                return "break"
+            window.destroy()
+            return "break"
+
+        def on_window_close() -> None:
+            close_editor()
 
         ttk.Button(buttons, text="Save", command=save).pack(side=tk.RIGHT)
+        text.bind("<Control-s>", save_shortcut)
+        text.bind("<Control-S>", save_shortcut)
+        text.bind("<Escape>", close_editor)
+        window.protocol("WM_DELETE_WINDOW", on_window_close)
 
     def _open_external(self, path: Path) -> None:
         if os.name == "posix":

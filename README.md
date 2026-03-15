@@ -5,7 +5,7 @@ A keyboard-first, two-pane file explorer for macOS inspired by classic commander
 ## Run
 
 ```bash
-cd /Users/idofrizler/temp/tc-mac-lite
+cd /path/to/tc4mac
 python3 app.py
 ```
 
@@ -37,6 +37,30 @@ python3 app.py
 - `F8` - delete selected/marked items
 - `Esc` - exit search mode (or close terminal when terminal input is focused)
 - `Ctrl+D` - open favorites hotlist window
+- `Ctrl+R` (or `Cmd+R` on macOS) - refresh active pane folder contents
+- In the edit window, `Ctrl+S` saves the current file
+- In view/edit windows, `Esc` closes the window; in edit mode with unsaved changes, it asks to save/discard/cancel
+
+## Build a macOS executable (.app)
+
+The repo includes a PyInstaller spec and icon (`assets/tc4mac.icns`) so you can build a native app bundle.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install pyinstaller
+./scripts/build_macos.sh
+```
+
+Output:
+
+- `dist/TC4Mac.app`
+
+Install/use:
+
+1. Open `dist/` in Finder.
+2. Drag `TC4Mac.app` into `/Applications`.
+3. Launch it from Launchpad/Finder.
 
 ## Notes
 
