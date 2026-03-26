@@ -39,7 +39,8 @@ python3 app.py
 - `F8` - delete selected/marked items
 - `Esc` - exit search mode (or close terminal when terminal input is focused)
 - `Ctrl+D` - open favorites hotlist window
-- `Ctrl+R` (or `Cmd+R` on macOS) - refresh active pane folder contents
+- `Ctrl+R` - refresh active pane folder contents
+- On macOS keyboards where F-keys are intercepted, `Cmd+R` (copy) and `Cmd+Shift+R` (move) are fallback shortcuts for `F5/F6`
 - `Ctrl+Left` in right pane (or `Ctrl+Right` in left pane) - open selected directory in the other pane
 - In the edit window, `Ctrl+S` saves the current file
 - In view/edit windows, `Esc` closes the window; in edit mode with unsaved changes, it asks to save/discard/cancel
@@ -74,5 +75,6 @@ Install/use:
 - In favorites hotlist, use `Up/Down` and `Enter` to choose a folder; use **Add current** to save the active path; `Esc` closes the hotlist.
 - In ZIP view, `Backspace` goes up inside the archive; at archive root, it exits back to the parent folder.
 - ZIP view is read-only: extract with `F5` first, then edit/move/delete on normal filesystem pane.
+- Right-click in a pane attempts to open the native Finder context menu for that pane's current folder.
 - On startup, the app restores the last opened folder in each pane.
 - This is a practical starter implementation inspired by Total Commander behavior.

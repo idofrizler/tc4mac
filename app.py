@@ -137,6 +137,8 @@ class TwoPaneCommander:
         tree.bind("<Down>", lambda _e: self._move_selection(1))
         tree.bind("<BackSpace>", lambda _e, p=pane: self._handle_backspace(p))
         tree.bind("<KeyPress>", lambda e, p=pane: self._handle_keypress(e, p))
+        tree.bind("<F5>", lambda _e: self._handle_copy_shortcut())
+        tree.bind("<F6>", lambda _e: self._handle_move_shortcut())
         tree.bind("<Right>", self._handle_right_key)
         if name == "Left":
             tree.bind("<Control-Right>", lambda _e, p=pane: self._open_selected_dir_in_other_pane(p))
@@ -147,9 +149,19 @@ class TwoPaneCommander:
         tree.bind("<Escape>", lambda _e: self._clear_filter())
         tree.bind("<Control-r>", self._handle_refresh_shortcut)
         tree.bind("<Control-R>", self._handle_refresh_shortcut)
+        tree.bind("<Button-2>", lambda e, p=pane: self._handle_pane_secondary_click(e, p))
+        tree.bind("<Button-3>", lambda e, p=pane: self._handle_pane_secondary_click(e, p))
         path_entry.bind("<Return>", lambda _e, n=name: self._go_to_path(n))
+        path_entry.bind("<F5>", lambda _e: self._handle_copy_shortcut())
+        path_entry.bind("<F6>", lambda _e: self._handle_move_shortcut())
         path_entry.bind("<Control-r>", self._handle_refresh_shortcut)
         path_entry.bind("<Control-R>", self._handle_refresh_shortcut)
+        if name == "Left":
+            path_entry.bind("<Control-Right>", lambda _e, p=pane: self._open_selected_dir_in_other_pane(p))
+            path_entry.bind("<Command-Right>", lambda _e, p=pane: self._open_selected_dir_in_other_pane(p))
+        else:
+            path_entry.bind("<Control-Left>", lambda _e, p=pane: self._open_selected_dir_in_other_pane(p))
+            path_entry.bind("<Command-Left>", lambda _e, p=pane: self._open_selected_dir_in_other_pane(p))
 
         return pane
 
@@ -171,24 +183,22 @@ class TwoPaneCommander:
         self.root.bind("<F3>", lambda _e: self._view_or_edit(editable=False))
         self.root.bind("<F4>", lambda _e: self._view_or_edit(editable=True))
         self.root.bind("<Shift-F4>", lambda _e: self._create_new_file())
-        self.root.bind("<F5>", lambda _e: self._copy_or_move(move=False))
-        self.root.bind("<F6>", lambda _e: self._copy_or_move(move=True))
+        self.root.bind("<F5>", self._handle_copy_shortcut)
+        self.root.bind("<F6>", self._handle_move_shortcut)
+        self.root.bind_all("<F5>", self._handle_copy_shortcut, add="+")
+        self.root.bind_all("<F6>", self._handle_move_shortcut, add="+")
+        self.root.bind("<Command-r>", self._handle_copy_shortcut)
+        self.root.bind("<Command-R>", self._handle_move_shortcut)
+        self.root.bind_all("<Command-KeyPress-r>", self._handle_copy_shortcut, add="+")
+        self.root.bind_all("<Command-KeyPress-R>", self._handle_move_shortcut, add="+")
         self.root.bind("<Shift-F6>", lambda _e: self._rename_selected())
         self.root.bind("<F7>", lambda _e: self._make_dir())
         self.root.bind("<F8>", lambda _e: self._delete_selected())
         self.root.bind("<Control-s>", lambda _e: self._clear_filter())
         self.root.bind("<Control-r>", self._handle_refresh_shortcut)
         self.root.bind("<Control-R>", self._handle_refresh_shortcut)
-        self.root.bind("<Command-r>", self._handle_refresh_shortcut)
-        self.root.bind("<Command-R>", self._handle_refresh_shortcut)
         self.root.bind_all("<Control-KeyPress-r>", self._handle_refresh_shortcut, add="+")
         self.root.bind_all("<Control-KeyPress-R>", self._handle_refresh_shortcut, add="+")
-        self.root.bind_all("<Command-KeyPress-r>", self._handle_refresh_shortcut, add="+")
-        self.root.bind_all("<Command-KeyPress-R>", self._handle_refresh_shortcut, add="+")
-        self.root.bind_all("<Control-KeyPress-Left>", self._handle_cross_pane_open, add="+")
-        self.root.bind_all("<Control-KeyPress-Right>", self._handle_cross_pane_open, add="+")
-        self.root.bind_all("<Command-KeyPress-Left>", self._handle_cross_pane_open, add="+")
-        self.root.bind_all("<Command-KeyPress-Right>", self._handle_cross_pane_open, add="+")
         self.root.bind("<Control-d>", self._handle_favorites_shortcut)
         self.root.bind("<Control-D>", self._handle_favorites_shortcut)
         self.root.bind_all("<Control-KeyPress-d>", self._handle_favorites_shortcut, add="+")
@@ -198,6 +208,14 @@ class TwoPaneCommander:
         pane = self.active_pane if self.active_pane else self.left
         self._refresh_pane(pane, keep_selection=True)
         self.status_var.set(f"Refreshed: {self._zip_display_path(pane)}")
+        return "break"
+
+    def _handle_copy_shortcut(self, _event: tk.Event | None = None) -> str:
+        self._copy_or_move(move=False)
+        return "break"
+
+    def _handle_move_shortcut(self, _event: tk.Event | None = None) -> str:
+        self._copy_or_move(move=True)
         return "break"
 
     def _handle_favorites_shortcut(self, _event: tk.Event | None = None) -> str:
@@ -210,6 +228,46 @@ class TwoPaneCommander:
         if source_widget is self.right.tree and event.keysym == "Left":
             return self._open_selected_dir_in_other_pane(self.right)
         return None
+
+    def _handle_pane_secondary_click(self, event: tk.Event, pane: PaneState) -> str:
+        self._set_active(pane)
+        row_id = pane.tree.identify_row(event.y)
+        if row_id:
+            pane.tree.selection_set(row_id)
+            pane.tree.focus(row_id)
+        target = pane.zip_path if self._is_zip_mode(pane) and pane.zip_path else pane.current_path
+        self._open_finder_context_menu(target)
+        return "break"
+
+    def _open_finder_context_menu(self, target: Path) -> None:
+        script = """
+on run argv
+    set targetPath to item 1 of argv
+    tell application "Finder"
+        activate
+        reveal POSIX file targetPath
+    end tell
+    delay 0.15
+    tell application "System Events"
+        tell process "Finder"
+            set frontmost to true
+            perform action "AXShowMenu" of first UI element of (first row of outline 1 of scroll area 1 of splitter group 1 of window 1 whose selected is true)
+        end tell
+    end tell
+end run
+"""
+        try:
+            completed = subprocess.run(
+                ["osascript", "-e", script, str(target)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except OSError as exc:
+            messagebox.showerror("Finder menu", f"Failed to open Finder menu:\n{exc}")
+            return
+        if completed.returncode != 0:
+            self.status_var.set("Could not auto-open Finder context menu (check Accessibility permission).")
 
     def _pane_by_name(self, name: str) -> PaneState:
         return self.left if name == "Left" else self.right
@@ -890,6 +948,10 @@ class TwoPaneCommander:
     def _handle_keypress(self, event: tk.Event, pane: PaneState) -> str | None:
         if pane is not self.active_pane:
             return None
+        if event.keysym == "F5":
+            return self._handle_copy_shortcut()
+        if event.keysym == "F6":
+            return self._handle_move_shortcut()
         modifier_pressed = bool(event.state & 0x4 or event.state & 0x8)
         if modifier_pressed and event.keysym in {"Right", "KP_Right"} and pane is self.left:
             return self._open_selected_dir_in_other_pane(pane)
