@@ -128,6 +128,55 @@ class TwoPaneCommander:
 
         pane = PaneState(name=name, container=parent, current_path=start_path, path_var=path_var, tree=tree)
         self._update_sort_headings(pane)
+        copy_btn = tk.Button(
+            toolbar,
+            text="⧉",
+            width=1,
+            height=1,
+            font=("TkDefaultFont", 11),
+            padx=0,
+            pady=0,
+            bd=1,
+            relief=tk.RAISED,
+            command=lambda p=pane: self._copy_pane_path(p),
+        )
+        refresh_btn = tk.Button(
+            toolbar,
+            text="⟳",
+            width=1,
+            height=1,
+            font=("TkDefaultFont", 11),
+            padx=0,
+            pady=0,
+            bd=1,
+            relief=tk.RAISED,
+            command=lambda p=pane: self._refresh_specific_pane(p),
+        )
+        copy_bg = str(copy_btn.cget("background"))
+        refresh_bg = str(refresh_btn.cget("background"))
+        hover_bg = "#dbeafe"
+        copy_btn.configure(activebackground=hover_bg)
+        refresh_btn.configure(activebackground=hover_bg)
+        copy_btn.pack(side=tk.RIGHT, padx=(4, 0))
+        refresh_btn.pack(side=tk.RIGHT, padx=(4, 0))
+        def copy_enter(_event: tk.Event) -> None:
+            copy_btn.configure(bg=hover_bg)
+            self.status_var.set(f"{name}: copy full path")
+
+        def copy_leave(_event: tk.Event) -> None:
+            copy_btn.configure(bg=copy_bg)
+
+        def refresh_enter(_event: tk.Event) -> None:
+            refresh_btn.configure(bg=hover_bg)
+            self.status_var.set(f"{name}: refresh pane")
+
+        def refresh_leave(_event: tk.Event) -> None:
+            refresh_btn.configure(bg=refresh_bg)
+
+        copy_btn.bind("<Enter>", copy_enter)
+        copy_btn.bind("<Leave>", copy_leave)
+        refresh_btn.bind("<Enter>", refresh_enter)
+        refresh_btn.bind("<Leave>", refresh_leave)
 
         tree.bind("<FocusIn>", lambda _e, p=pane: self._set_active(p))
         tree.bind("<Double-Button-1>", lambda e, p=pane: self._handle_tree_double_click(e, p))
@@ -164,6 +213,18 @@ class TwoPaneCommander:
             path_entry.bind("<Command-Left>", lambda _e, p=pane: self._open_selected_dir_in_other_pane(p))
 
         return pane
+
+    def _copy_pane_path(self, pane: PaneState) -> None:
+        value = pane.path_var.get().strip()
+        if not value:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(value)
+        self.status_var.set(f"{pane.name} path copied")
+
+    def _refresh_specific_pane(self, pane: PaneState) -> None:
+        self._refresh_pane(pane, keep_selection=True)
+        self.status_var.set(f"Refreshed: {self._zip_display_path(pane)}")
 
     def _build_terminal(self, parent: tk.Widget) -> None:
         self.terminal_frame = ttk.Frame(parent, padding=(6, 4))

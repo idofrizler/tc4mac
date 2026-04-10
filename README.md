@@ -12,6 +12,7 @@ python3 app.py
 ## Core controls
 
 - Main list columns: **Name**, **Size**, **Ext**, **Last Modified**
+- Each pane toolbar includes copy (`⧉`) and refresh (`⟳`) icon buttons next to the path field
 - Click a column header to sort by that column (click again to toggle ascending/descending)
 - Double-click a **column separator** to auto-fit that column to content (only if enough width remains for other columns)
 - `Tab` - switch active pane and move highlight to the opposite pane
