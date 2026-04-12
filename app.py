@@ -217,12 +217,22 @@ class TwoPaneCommander:
         return pane
 
     def _copy_pane_path(self, pane: PaneState) -> None:
-        value = pane.path_var.get().strip()
+        value = str(pane.current_path)
+        if self._is_zip_mode(pane):
+            entry = self._selected_zip_entry(pane)
+            if entry and pane.zip_path:
+                value = f"{pane.zip_path}::/{entry.rel_path}"
+            else:
+                value = self._zip_display_path(pane)
+        else:
+            selected = self._selected_path(pane)
+            if selected and selected != pane.current_path.parent:
+                value = str(selected)
         if not value:
             return
         self.root.clipboard_clear()
         self.root.clipboard_append(value)
-        self.status_var.set(f"{pane.name} path copied")
+        self.status_var.set(f"{pane.name} copied: {value}")
 
     def _refresh_specific_pane(self, pane: PaneState) -> None:
         self._refresh_pane(pane, keep_selection=True)
