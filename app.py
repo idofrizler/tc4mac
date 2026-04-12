@@ -47,6 +47,8 @@ class TwoPaneCommander:
         self.root = root
         self.root.title("TC Mac Lite")
         self.root.geometry("1260x760")
+        self.root.resizable(True, True)
+        self.root.maxsize(10000, 10000)
         self.status_var = tk.StringVar(value="Ready")
         self.filter_var = tk.StringVar(value="")
         self.filter_query = ""
@@ -186,8 +188,8 @@ class TwoPaneCommander:
         tree.bind("<Down>", lambda _e: self._move_selection(1))
         tree.bind("<BackSpace>", lambda _e, p=pane: self._handle_backspace(p))
         tree.bind("<KeyPress>", lambda e, p=pane: self._handle_keypress(e, p))
-        tree.bind("<F5>", lambda _e: self._handle_copy_shortcut())
-        tree.bind("<F6>", lambda _e: self._handle_move_shortcut())
+        tree.bind("<F5>", self._handle_copy_shortcut)
+        tree.bind("<F6>", self._handle_move_shortcut)
         tree.bind("<Right>", self._handle_right_key)
         if name == "Left":
             tree.bind("<Control-Right>", lambda _e, p=pane: self._open_selected_dir_in_other_pane(p))
@@ -201,8 +203,8 @@ class TwoPaneCommander:
         tree.bind("<Button-2>", lambda e, p=pane: self._handle_pane_secondary_click(e, p))
         tree.bind("<Button-3>", lambda e, p=pane: self._handle_pane_secondary_click(e, p))
         path_entry.bind("<Return>", lambda _e, n=name: self._go_to_path(n))
-        path_entry.bind("<F5>", lambda _e: self._handle_copy_shortcut())
-        path_entry.bind("<F6>", lambda _e: self._handle_move_shortcut())
+        path_entry.bind("<F5>", self._handle_copy_shortcut)
+        path_entry.bind("<F6>", self._handle_move_shortcut)
         path_entry.bind("<Control-r>", self._handle_refresh_shortcut)
         path_entry.bind("<Control-R>", self._handle_refresh_shortcut)
         if name == "Left":
@@ -252,7 +254,8 @@ class TwoPaneCommander:
         self.root.bind("<Command-R>", self._handle_move_shortcut)
         self.root.bind_all("<Command-KeyPress-r>", self._handle_copy_shortcut, add="+")
         self.root.bind_all("<Command-KeyPress-R>", self._handle_move_shortcut, add="+")
-        self.root.bind("<Shift-F6>", lambda _e: self._rename_selected())
+        self.root.bind("<Shift-F6>", self._handle_rename_shortcut)
+        self.root.bind_all("<Shift-F6>", self._handle_rename_shortcut, add="+")
         self.root.bind("<F7>", lambda _e: self._make_dir())
         self.root.bind("<F8>", lambda _e: self._delete_selected())
         self.root.bind("<Control-s>", lambda _e: self._clear_filter())
@@ -276,8 +279,29 @@ class TwoPaneCommander:
         return "break"
 
     def _handle_move_shortcut(self, _event: tk.Event | None = None) -> str:
+        if _event is not None and (_event.state & 0x1):
+            return self._handle_rename_shortcut(_event)
         self._copy_or_move(move=True)
         return "break"
+
+    def _pane_from_widget(self, widget: tk.Misc | None) -> PaneState | None:
+        if widget is None:
+            return None
+        if widget is self.left.tree:
+            return self.left
+        if widget is self.right.tree:
+            return self.right
+        widget_path = str(widget)
+        if widget_path.startswith(str(self.left.container)):
+            return self.left
+        if widget_path.startswith(str(self.right.container)):
+            return self.right
+        return None
+
+    def _handle_rename_shortcut(self, event: tk.Event | None = None) -> str:
+        source_widget = event.widget if event is not None else self.root.focus_get()
+        pane = self._pane_from_widget(source_widget) or self.active_pane or self.left
+        return self._rename_selected(pane)
 
     def _handle_favorites_shortcut(self, _event: tk.Event | None = None) -> str:
         return self._show_favorites_hotlist()
@@ -1480,8 +1504,8 @@ end run
         pane.tree.focus_set()
         return "break"
 
-    def _rename_selected(self) -> str:
-        pane = self.active_pane
+    def _rename_selected(self, pane: PaneState | None = None) -> str:
+        pane = pane if pane else self.active_pane
         if not pane:
             return "break"
         if self._is_zip_mode(pane):
